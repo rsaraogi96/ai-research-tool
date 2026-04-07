@@ -2,117 +2,109 @@
 import asyncio
 import json
 from datetime import datetime, date
-from urllib.parse import quote
 
 import feedparser
 import httpx
 
 from backend.collectors.base import BaseCollector, RawResearchItem
 
-ARXIV_API = "http://export.arxiv.org/api/query"
-
-DOMAIN_KEYWORDS = [
-    "economics", "operations", "efficiency", "manufacturing", "healthcare",
-    "finance", "supply chain", "pricing", "applied", "industry",
-    "production", "deployment", "optimization", "automation", "logistics",
-    "resource allocation", "scheduling", "cost", "productivity", "retail",
-    "energy", "transportation",
-]
-
-CATEGORIES = ["cs.AI", "cs.LG", "cs.CL", "cs.CV", "stat.ML"]
+ARXIV_API = "https://export.arxiv.org/api/query"
 
 
 class ArxivCollector(BaseCollector):
     name = "arxiv"
     schedule_interval_hours = 6
 
+    QUERIES = [
+        "cat:cs.AI AND abs:economics",
+        "cat:cs.AI AND abs:operations",
+        "cat:cs.AI AND abs:efficiency",
+        "cat:cs.LG AND abs:manufacturing",
+        "cat:cs.LG AND abs:healthcare",
+        "cat:cs.LG AND abs:finance",
+        "cat:cs.AI AND abs:optimization AND abs:applied",
+        "cat:cs.LG AND abs:supply AND abs:chain",
+        "cat:cs.CL AND abs:applied AND abs:industry",
+        "cat:cs.AI AND abs:logistics",
+        "cat:cs.LG AND abs:pricing",
+        "cat:cs.AI AND abs:automation AND abs:industry",
+    ]
+
     async def collect(self, since: datetime | None = None) -> list[RawResearchItem]:
         items = []
-        # Build queries combining categories with domain keywords
-        cat_query = " OR ".join(f"cat:{c}" for c in CATEGORIES)
-        keyword_query = " OR ".join(f"abs:{kw}" for kw in DOMAIN_KEYWORDS[:10])
-        query = f"({cat_query}) AND ({keyword_query})"
+        seen_ids = set()
 
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            for start in range(0, 200, 100):  # Fetch up to 200 papers
-                params = {
-                    "search_query": query,
-                    "start": start,
-                    "max_results": 100,
-                    "sortBy": "submittedDate",
-                    "sortOrder": "descending",
-                }
-                try:
-                    resp = await client.get(ARXIV_API, params=params)
-                    resp.raise_for_status()
-                except httpx.HTTPError as e:
-                    print(f"ArXiv API error: {e}")
-                    break
+        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+            for query in self.QUERIES:
+                for start in range(0, 100, 50):
+                    params = {
+                        "search_query": query,
+                        "start": start,
+                        "max_results": 50,
+                        "sortBy": "submittedDate",
+                        "sortOrder": "descending",
+                    }
+                    try:
+                        resp = await client.get(ARXIV_API, params=params)
+                        resp.raise_for_status()
+                    except httpx.HTTPError as e:
+                        print(f"ArXiv API error: {e}")
+                        break
 
-                feed = feedparser.parse(resp.text)
-                if not feed.entries:
-                    break
+                    feed = feedparser.parse(resp.text)
+                    if not feed.entries:
+                        break
 
-                for entry in feed.entries:
-                    arxiv_id = entry.get("id", "").split("/abs/")[-1].split("v")[0]
-                    if not arxiv_id:
-                        continue
+                    for entry in feed.entries:
+                        arxiv_id = entry.get("id", "").split("/abs/")[-1].split("v")[0]
+                        if not arxiv_id or arxiv_id in seen_ids:
+                            continue
+                        seen_ids.add(arxiv_id)
 
-                    # Extract authors and affiliations
-                    authors = []
-                    company_name = None
-                    for author in entry.get("authors", []):
-                        name = author.get("name", "")
-                        if name:
-                            authors.append(name)
-                        # Check for affiliation
-                        affiliation = None
-                        if hasattr(author, "arxiv_affiliation"):
-                            affiliation = author.get("arxiv_affiliation", "")
-                        for tag in entry.get("tags", []):
-                            pass  # affiliations are sparse in arXiv
+                        authors = []
+                        for author in entry.get("authors", []):
+                            name = author.get("name", "")
+                            if name:
+                                authors.append(name)
 
-                    # Parse date
-                    published = None
-                    if entry.get("published"):
-                        try:
-                            published = datetime.fromisoformat(
-                                entry["published"].replace("Z", "+00:00")
-                            ).date()
-                        except (ValueError, TypeError):
-                            pass
+                        published = None
+                        if entry.get("published"):
+                            try:
+                                published = datetime.fromisoformat(
+                                    entry["published"].replace("Z", "+00:00")
+                                ).date()
+                            except (ValueError, TypeError):
+                                pass
 
-                    # Detect industry/domain from abstract
-                    abstract = entry.get("summary", "")
-                    industry = self._detect_industry(abstract)
-                    domain = self._detect_domain(abstract)
+                        abstract = entry.get("summary", "")
+                        industry = self._detect_industry(abstract)
+                        domain = self._detect_domain(abstract)
 
-                    # Build links
-                    links = [{"url": entry.get("id", ""), "type": "paper", "title": "ArXiv Page"}]
-                    for link in entry.get("links", []):
-                        if link.get("type") == "application/pdf":
-                            links.append({"url": link["href"], "type": "paper", "title": "PDF"})
+                        links = [{"url": entry.get("id", ""), "type": "paper", "title": "ArXiv Page"}]
+                        for link in entry.get("links", []):
+                            if link.get("type") == "application/pdf":
+                                links.append({"url": link["href"], "type": "paper", "title": "PDF"})
 
-                    items.append(RawResearchItem(
-                        title=entry.get("title", "").replace("\n", " ").strip(),
-                        description=abstract.replace("\n", " ").strip()[:2000],
-                        source_type="arxiv",
-                        source_id=arxiv_id,
-                        source_url=entry.get("id", ""),
-                        company_name=company_name,
-                        industry=industry,
-                        domain=domain,
-                        date_published=published,
-                        authors=authors,
-                        links=links,
-                        raw_metadata=json.dumps({
-                            "categories": [t.get("term", "") for t in entry.get("tags", [])],
-                            "authors": authors,
-                        }),
-                    ))
+                        items.append(RawResearchItem(
+                            title=entry.get("title", "").replace("\n", " ").strip(),
+                            description=abstract.replace("\n", " ").strip()[:2000],
+                            source_type="arxiv",
+                            source_id=arxiv_id,
+                            source_url=entry.get("id", ""),
+                            company_name=None,
+                            industry=industry,
+                            domain=domain,
+                            date_published=published,
+                            authors=authors,
+                            links=links,
+                            raw_metadata=json.dumps({
+                                "categories": [t.get("term", "") for t in entry.get("tags", [])],
+                                "authors": authors,
+                            }),
+                        ))
 
-                # Rate limit: 3 seconds between requests per arXiv policy
-                await asyncio.sleep(3)
+                    # Rate limit: 3 seconds between requests per arXiv policy
+                    await asyncio.sleep(3)
 
         return items
 

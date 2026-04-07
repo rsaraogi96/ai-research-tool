@@ -5,12 +5,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 async def fts_search(session: AsyncSession, query: str, limit: int = 20, offset: int = 0):
     """Search research instances using FTS5 with BM25 ranking."""
-    # Clean query for FTS5
     clean_query = query.replace('"', '').replace("'", "").strip()
     if not clean_query:
         return [], 0
 
-    # FTS5 search with BM25 ranking and snippets
     sql = text("""
         SELECT
             ri.*,
@@ -27,7 +25,6 @@ async def fts_search(session: AsyncSession, query: str, limit: int = 20, offset:
     result = await session.execute(sql, {"query": clean_query, "limit": limit, "offset": offset})
     rows = result.fetchall()
 
-    # Get total count
     count_sql = text("""
         SELECT COUNT(*) FROM research_instances_fts
         WHERE research_instances_fts MATCH :query
@@ -47,9 +44,9 @@ async def fts_facets(session: AsyncSession, query: str):
     # Source facets
     source_sql = text("""
         SELECT ri.source_type, COUNT(*) as cnt
-        FROM research_instances_fts fts
-        JOIN research_instances ri ON ri.id = fts.rowid
-        WHERE fts MATCH :query
+        FROM research_instances_fts
+        JOIN research_instances ri ON ri.id = research_instances_fts.rowid
+        WHERE research_instances_fts MATCH :query
         GROUP BY ri.source_type
     """)
     result = await session.execute(source_sql, {"query": clean_query})
@@ -58,9 +55,9 @@ async def fts_facets(session: AsyncSession, query: str):
     # Industry facets
     industry_sql = text("""
         SELECT ri.industry, COUNT(*) as cnt
-        FROM research_instances_fts fts
-        JOIN research_instances ri ON ri.id = fts.rowid
-        WHERE fts MATCH :query AND ri.industry IS NOT NULL
+        FROM research_instances_fts
+        JOIN research_instances ri ON ri.id = research_instances_fts.rowid
+        WHERE research_instances_fts MATCH :query AND ri.industry IS NOT NULL
         GROUP BY ri.industry
     """)
     result = await session.execute(industry_sql, {"query": clean_query})
@@ -69,9 +66,9 @@ async def fts_facets(session: AsyncSession, query: str):
     # Domain facets
     domain_sql = text("""
         SELECT ri.domain, COUNT(*) as cnt
-        FROM research_instances_fts fts
-        JOIN research_instances ri ON ri.id = fts.rowid
-        WHERE fts MATCH :query AND ri.domain IS NOT NULL
+        FROM research_instances_fts
+        JOIN research_instances ri ON ri.id = research_instances_fts.rowid
+        WHERE research_instances_fts MATCH :query AND ri.domain IS NOT NULL
         GROUP BY ri.domain
     """)
     result = await session.execute(domain_sql, {"query": clean_query})

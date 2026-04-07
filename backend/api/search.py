@@ -26,21 +26,29 @@ async def search(
 
     results = []
     for row in rows:
+        # Row columns: all research_instance cols, then relevance, title_snippet, desc_snippet
+        instance_id = row[0]  # id is first column
+
         # Load full instance with relationships
-        query = select(ResearchInstance).options(
+        stmt = select(ResearchInstance).options(
             selectinload(ResearchInstance.company),
             selectinload(ResearchInstance.tags),
             selectinload(ResearchInstance.people),
             selectinload(ResearchInstance.links),
-        ).where(ResearchInstance.id == row.id)
-        result = await db.execute(query)
+        ).where(ResearchInstance.id == instance_id)
+        result = await db.execute(stmt)
         instance = result.unique().scalar_one_or_none()
         if instance:
+            # relevance, title_snippet, desc_snippet are the last 3 columns
+            relevance = row[-3] if row[-3] is not None else 0
+            title_snippet = row[-2]
+            desc_snippet = row[-1]
+
             results.append(SearchResult(
                 instance=ResearchInstanceResponse.model_validate(instance),
-                relevance_score=abs(row.relevance) if hasattr(row, 'relevance') else 0,
-                title_snippet=row.title_snippet if hasattr(row, 'title_snippet') else None,
-                description_snippet=row.desc_snippet if hasattr(row, 'desc_snippet') else None,
+                relevance_score=abs(relevance),
+                title_snippet=title_snippet,
+                description_snippet=desc_snippet,
             ))
 
     return SearchResponse(
