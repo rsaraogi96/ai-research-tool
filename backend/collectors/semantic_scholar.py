@@ -6,27 +6,16 @@ from datetime import datetime, date
 import httpx
 
 from backend.collectors.base import BaseCollector, RawResearchItem
+from backend.collectors.taxonomy import (
+    SEMANTIC_SCHOLAR_QUERIES,
+    FRONTIER_AREAS,
+    compute_relevance_score,
+    detect_industry,
+    detect_domain,
+)
 from backend.config import settings
 
 S2_API = "https://api.semanticscholar.org/graph/v1"
-
-SEARCH_QUERIES = [
-    "applied AI economics",
-    "machine learning operations efficiency",
-    "AI manufacturing optimization",
-    "deep learning supply chain",
-    "AI healthcare operations",
-    "machine learning pricing",
-    "AI logistics optimization",
-    "applied machine learning finance",
-    "AI automation industry",
-    "neural network forecasting demand",
-    "AI resource allocation",
-    "LLM applied industry",
-    "AI production system deployment",
-    "machine learning retail optimization",
-    "AI energy efficiency",
-]
 
 
 class SemanticScholarCollector(BaseCollector):
@@ -35,16 +24,16 @@ class SemanticScholarCollector(BaseCollector):
 
     async def collect(self, since: datetime | None = None) -> list[RawResearchItem]:
         items = []
-        seen_ids = set()
+        seen_ids: set[str] = set()
 
         headers = {}
         if settings.semantic_scholar_api_key:
             headers["x-api-key"] = settings.semantic_scholar_api_key
 
-        fields = "paperId,title,abstract,authors,venue,year,citationCount,fieldsOfStudy,publicationDate,openAccessPdf,journal,externalIds"
+        fields = "paperId,title,abstract,authors,venue,year,citationCount,fieldsOfStudy,publicationDate,openAccessPdf,externalIds"
 
         async with httpx.AsyncClient(timeout=30.0, headers=headers) as client:
-            for query in SEARCH_QUERIES:
+            for query, frontier_area in SEMANTIC_SCHOLAR_QUERIES:
                 try:
                     resp = await client.get(
                         f"{S2_API}/paper/search",
@@ -71,15 +60,20 @@ class SemanticScholarCollector(BaseCollector):
                         continue
                     seen_ids.add(paper_id)
 
-                    # Parse authors
-                    authors = []
-                    company_name = None
-                    for author in paper.get("authors", []):
-                        name = author.get("name", "")
-                        if name:
-                            authors.append(name)
+                    title = (paper.get("title") or "").strip()
+                    abstract = (paper.get("abstract") or "").strip()[:2000]
 
-                    # Parse date
+                    # Compute relevance and skip low-relevance items
+                    relevance = compute_relevance_score(title, abstract)
+                    if relevance < 0.2:
+                        continue
+
+                    authors = [
+                        a.get("name", "")
+                        for a in paper.get("authors", [])
+                        if a.get("name")
+                    ]
+
                     published = None
                     if paper.get("publicationDate"):
                         try:
@@ -92,20 +86,18 @@ class SemanticScholarCollector(BaseCollector):
                         except (ValueError, TypeError):
                             pass
 
-                    # Detect industry/domain from abstract
-                    abstract = paper.get("abstract") or ""
-                    title = paper.get("title") or ""
+                    # Use taxonomy-aware detection
                     combined = f"{title} {abstract}"
+                    industry = detect_industry(combined)
+                    domain = detect_domain(combined)
+                    area_info = FRONTIER_AREAS.get(frontier_area, {})
+                    if not domain and area_info.get("domain"):
+                        domain = area_info["domain"]
 
-                    industry = self._detect_industry(combined)
-                    domain = self._detect_domain(combined)
-
-                    # Build links
                     links = []
                     if paper.get("openAccessPdf", {}) and paper["openAccessPdf"].get("url"):
                         links.append({"url": paper["openAccessPdf"]["url"], "type": "paper", "title": "PDF"})
 
-                    # Check for arXiv ID
                     arxiv_id = None
                     ext_ids = paper.get("externalIds", {}) or {}
                     if ext_ids.get("ArXiv"):
@@ -120,12 +112,13 @@ class SemanticScholarCollector(BaseCollector):
                     links.append({"url": source_url, "type": "paper", "title": "Semantic Scholar"})
 
                     items.append(RawResearchItem(
-                        title=title.strip(),
-                        description=abstract.strip()[:2000] if abstract else None,
+                        title=title,
+                        description=abstract if abstract else None,
                         source_type="semantic_scholar",
+                        relevance_score=relevance,
                         source_id=paper_id,
                         source_url=source_url,
-                        company_name=company_name,
+                        company_name=None,
                         industry=industry,
                         domain=domain,
                         date_published=published,
@@ -137,47 +130,11 @@ class SemanticScholarCollector(BaseCollector):
                             "fields_of_study": paper.get("fieldsOfStudy", []),
                             "arxiv_id": arxiv_id,
                             "authors": authors,
+                            "frontier_area": frontier_area,
+                            "relevance_score": relevance,
                         }),
                     ))
 
-                # Rate limit
                 await asyncio.sleep(1.5)
 
         return items
-
-    def _detect_industry(self, text: str) -> str | None:
-        text_lower = text.lower()
-        industry_keywords = {
-            "Healthcare": ["healthcare", "medical", "clinical", "hospital", "patient", "diagnosis"],
-            "Finance": ["financial", "banking", "trading", "stock", "portfolio", "credit"],
-            "Manufacturing": ["manufacturing", "factory", "assembly", "production line"],
-            "Retail": ["retail", "e-commerce", "shopping", "consumer"],
-            "Energy": ["energy", "power grid", "renewable", "solar", "electricity"],
-            "Transportation": ["transportation", "autonomous driving", "vehicle", "traffic"],
-            "Agriculture": ["agriculture", "crop", "farming"],
-            "Logistics": ["logistics", "warehouse", "delivery", "shipping"],
-            "Education": ["education", "student", "tutoring"],
-            "Telecommunications": ["telecom", "network traffic", "5g", "wireless"],
-        }
-        for industry, keywords in industry_keywords.items():
-            if any(kw in text_lower for kw in keywords):
-                return industry
-        return None
-
-    def _detect_domain(self, text: str) -> str | None:
-        text_lower = text.lower()
-        domain_keywords = {
-            "Economics": ["economics", "economic", "market", "equilibrium", "welfare"],
-            "Operations Research": ["operations research", "combinatorial", "scheduling"],
-            "Efficiency": ["efficiency", "latency", "throughput", "compression", "pruning"],
-            "Supply Chain": ["supply chain", "inventory", "procurement"],
-            "Pricing": ["pricing", "price", "auction", "revenue"],
-            "Automation": ["automation", "automate", "workflow"],
-            "Decision Making": ["decision making", "decision support", "policy"],
-            "Optimization": ["optimization", "optimize", "resource allocation"],
-            "Forecasting": ["forecasting", "prediction", "demand forecasting"],
-        }
-        for domain, keywords in domain_keywords.items():
-            if any(kw in text_lower for kw in keywords):
-                return domain
-        return None

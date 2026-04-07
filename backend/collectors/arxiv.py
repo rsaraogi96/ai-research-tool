@@ -7,6 +7,13 @@ import feedparser
 import httpx
 
 from backend.collectors.base import BaseCollector, RawResearchItem
+from backend.collectors.taxonomy import (
+    ARXIV_QUERIES,
+    FRONTIER_AREAS,
+    compute_relevance_score,
+    detect_industry,
+    detect_domain,
+)
 
 ARXIV_API = "https://export.arxiv.org/api/query"
 
@@ -15,28 +22,13 @@ class ArxivCollector(BaseCollector):
     name = "arxiv"
     schedule_interval_hours = 6
 
-    QUERIES = [
-        "cat:cs.AI AND abs:economics",
-        "cat:cs.AI AND abs:operations",
-        "cat:cs.AI AND abs:efficiency",
-        "cat:cs.LG AND abs:manufacturing",
-        "cat:cs.LG AND abs:healthcare",
-        "cat:cs.LG AND abs:finance",
-        "cat:cs.AI AND abs:optimization AND abs:applied",
-        "cat:cs.LG AND abs:supply AND abs:chain",
-        "cat:cs.CL AND abs:applied AND abs:industry",
-        "cat:cs.AI AND abs:logistics",
-        "cat:cs.LG AND abs:pricing",
-        "cat:cs.AI AND abs:automation AND abs:industry",
-    ]
-
     async def collect(self, since: datetime | None = None) -> list[RawResearchItem]:
         items = []
-        seen_ids = set()
+        seen_ids: set[str] = set()
 
         async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
-            for query in self.QUERIES:
-                for start in range(0, 100, 50):
+            for query, frontier_area in ARXIV_QUERIES:
+                for start in range(0, 50, 50):  # 50 per query
                     params = {
                         "search_query": query,
                         "start": start,
@@ -48,7 +40,7 @@ class ArxivCollector(BaseCollector):
                         resp = await client.get(ARXIV_API, params=params)
                         resp.raise_for_status()
                     except httpx.HTTPError as e:
-                        print(f"ArXiv API error: {e}")
+                        print(f"ArXiv API error for '{query}': {e}")
                         break
 
                     feed = feedparser.parse(resp.text)
@@ -61,11 +53,19 @@ class ArxivCollector(BaseCollector):
                             continue
                         seen_ids.add(arxiv_id)
 
-                        authors = []
-                        for author in entry.get("authors", []):
-                            name = author.get("name", "")
-                            if name:
-                                authors.append(name)
+                        title = entry.get("title", "").replace("\n", " ").strip()
+                        abstract = entry.get("summary", "").replace("\n", " ").strip()[:2000]
+
+                        # Compute relevance and skip low-relevance items
+                        relevance = compute_relevance_score(title, abstract)
+                        if relevance < 0.2:
+                            continue
+
+                        authors = [
+                            a.get("name", "")
+                            for a in entry.get("authors", [])
+                            if a.get("name")
+                        ]
 
                         published = None
                         if entry.get("published"):
@@ -76,9 +76,12 @@ class ArxivCollector(BaseCollector):
                             except (ValueError, TypeError):
                                 pass
 
-                        abstract = entry.get("summary", "")
-                        industry = self._detect_industry(abstract)
-                        domain = self._detect_domain(abstract)
+                        # Use taxonomy-aware detection, with frontier area as fallback
+                        industry = detect_industry(abstract)
+                        domain = detect_domain(abstract)
+                        area_info = FRONTIER_AREAS.get(frontier_area, {})
+                        if not domain and area_info.get("domain"):
+                            domain = area_info["domain"]
 
                         links = [{"url": entry.get("id", ""), "type": "paper", "title": "ArXiv Page"}]
                         for link in entry.get("links", []):
@@ -86,9 +89,10 @@ class ArxivCollector(BaseCollector):
                                 links.append({"url": link["href"], "type": "paper", "title": "PDF"})
 
                         items.append(RawResearchItem(
-                            title=entry.get("title", "").replace("\n", " ").strip(),
-                            description=abstract.replace("\n", " ").strip()[:2000],
+                            title=title,
+                            description=abstract,
                             source_type="arxiv",
+                            relevance_score=relevance,
                             source_id=arxiv_id,
                             source_url=entry.get("id", ""),
                             company_name=None,
@@ -100,6 +104,8 @@ class ArxivCollector(BaseCollector):
                             raw_metadata=json.dumps({
                                 "categories": [t.get("term", "") for t in entry.get("tags", [])],
                                 "authors": authors,
+                                "frontier_area": frontier_area,
+                                "relevance_score": relevance,
                             }),
                         ))
 
@@ -107,40 +113,3 @@ class ArxivCollector(BaseCollector):
                     await asyncio.sleep(3)
 
         return items
-
-    def _detect_industry(self, text: str) -> str | None:
-        text_lower = text.lower()
-        industry_keywords = {
-            "Healthcare": ["healthcare", "medical", "clinical", "hospital", "patient", "diagnosis", "drug"],
-            "Finance": ["financial", "banking", "trading", "stock", "portfolio", "credit", "fraud"],
-            "Manufacturing": ["manufacturing", "factory", "assembly", "production line", "industrial"],
-            "Retail": ["retail", "e-commerce", "shopping", "consumer", "merchandise"],
-            "Energy": ["energy", "power grid", "renewable", "solar", "wind", "electricity"],
-            "Transportation": ["transportation", "autonomous driving", "vehicle", "traffic", "routing"],
-            "Agriculture": ["agriculture", "crop", "farming", "soil", "harvest"],
-            "Logistics": ["logistics", "warehouse", "delivery", "shipping", "fleet"],
-            "Education": ["education", "student", "learning outcome", "tutoring", "curriculum"],
-            "Telecommunications": ["telecom", "network traffic", "5g", "wireless", "cellular"],
-        }
-        for industry, keywords in industry_keywords.items():
-            if any(kw in text_lower for kw in keywords):
-                return industry
-        return None
-
-    def _detect_domain(self, text: str) -> str | None:
-        text_lower = text.lower()
-        domain_keywords = {
-            "Economics": ["economics", "economic", "market", "equilibrium", "welfare", "incentive"],
-            "Operations Research": ["operations research", "combinatorial", "scheduling", "assignment", "routing"],
-            "Efficiency": ["efficiency", "speed", "latency", "throughput", "compression", "pruning"],
-            "Supply Chain": ["supply chain", "inventory", "procurement", "vendor"],
-            "Pricing": ["pricing", "price", "auction", "revenue", "cost optimization"],
-            "Automation": ["automation", "automate", "workflow", "robotic process"],
-            "Decision Making": ["decision making", "decision support", "policy", "planning"],
-            "Optimization": ["optimization", "optimize", "resource allocation", "scheduling"],
-            "Forecasting": ["forecasting", "prediction", "demand", "time series"],
-        }
-        for domain, keywords in domain_keywords.items():
-            if any(kw in text_lower for kw in keywords):
-                return domain
-        return None

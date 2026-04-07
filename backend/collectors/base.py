@@ -24,6 +24,7 @@ class RawResearchItem:
     date_published: Any = None
     authors: list[str] = field(default_factory=list)
     links: list[dict] = field(default_factory=list)
+    relevance_score: float = 0.0
     raw_metadata: str = "{}"
 
 
@@ -97,6 +98,7 @@ class BaseCollector(ABC):
                         industry=item.industry,
                         domain=item.domain,
                         date_published=item.date_published,
+                        relevance_score=item.relevance_score,
                         raw_metadata=item.raw_metadata,
                     )
                     # Try insert, skip on duplicate

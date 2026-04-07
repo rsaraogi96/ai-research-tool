@@ -16,6 +16,27 @@ TAGS = [
     ("Graph Neural Networks", "method"),
     ("Time Series", "method"),
     ("Causal Inference", "method"),
+    ("Neurosymbolic AI", "method"),
+    ("Speculative Decoding", "method"),
+    ("Active Learning", "method"),
+    ("Offline RL", "method"),
+    ("Sim-to-Real", "method"),
+
+    # Frontier Areas (from APPLIED_AI_RESEARCH_FRONTIER.md)
+    ("Self-Improving Agents", "frontier"),
+    ("RL in Production", "frontier"),
+    ("Agent Orchestration", "frontier"),
+    ("LLM Process Automation", "frontier"),
+    ("AI + Operations Research", "frontier"),
+    ("Human-AI Collaboration", "frontier"),
+    ("RAG in Production", "frontier"),
+    ("AI Reliability & Guardrails", "frontier"),
+    ("Efficient Inference", "frontier"),
+    ("AI for Economics", "frontier"),
+    ("Causal ML", "frontier"),
+    ("Digital Twins", "frontier"),
+    ("Neurosymbolic Enterprise", "frontier"),
+    ("Compound AI Systems", "frontier"),
 
     # Domains
     ("Economics", "domain"),
@@ -33,6 +54,12 @@ TAGS = [
     ("Process Optimization", "domain"),
     ("Cost Reduction", "domain"),
     ("Productivity", "domain"),
+    ("Continual Learning", "domain"),
+    ("AI Safety", "domain"),
+    ("Mechanism Design", "domain"),
+    ("Search & Retrieval", "domain"),
+    ("Reasoning", "domain"),
+    ("Simulation", "domain"),
 
     # Industries
     ("Healthcare", "industry"),
@@ -63,6 +90,9 @@ TAGS = [
     ("Document Processing", "application"),
     ("Code Generation", "application"),
     ("Search & Retrieval", "application"),
+    ("Workflow Automation", "application"),
+    ("Model Serving", "application"),
+    ("Guardrails & Safety", "application"),
 ]
 
 COMPANIES = [
